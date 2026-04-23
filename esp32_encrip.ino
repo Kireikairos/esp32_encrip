@@ -15,6 +15,10 @@
 #include "credentials.h"
 #include "web_pages.h"
 
+#ifndef RGB_BUILTIN
+#define RGB_BUILTIN PIN_LED_PRINCIPAL
+#endif
+
 // ---- Servidor HTTP ----
 // El sitio web del proyecto se publica en el puerto 80.
 WebServer servidor(80);
@@ -27,6 +31,25 @@ static bool   sesionActiva = false;
 // ---- Estado del LED ----
 // Esta variable permite reflejar el estado del LED en la interfaz web.
 static bool ledEncendido = false;
+
+// ---- Control del LED principal RGB ----
+// Esta placa usa un WS2812 integrado en GPIO48.
+void escribirLedPrincipal(uint8_t rojo, uint8_t verde, uint8_t azul) {
+    rgbLedWrite(RGB_BUILTIN, rojo, verde, azul);
+}
+
+// ---- Estado visual de la placa ----
+// Se usa solo durante el arranque y diagnostico.
+void mostrarEstadoPlaca(uint8_t rojo, uint8_t verde, uint8_t azul) {
+    escribirLedPrincipal(rojo, verde, azul);
+}
+
+// ---- Sincroniza el estado del LED controlado por el usuario ----
+// Se actualiza tanto el RGB integrado como la salida auxiliar.
+void aplicarEstadoLedUsuario() {
+    digitalWrite(PIN_LED_AUXILIAR, ledEncendido ? HIGH : LOW);
+    escribirLedPrincipal(ledEncendido ? 0 : 0, ledEncendido ? 48 : 0, ledEncendido ? 12 : 0);
+}
 
 // ---- Genera el token de la sesión ----
 // Se usa un valor aleatorio para identificar al usuario autenticado.
@@ -78,9 +101,19 @@ String construirLoginHtml(const String& error, const String& warning, const Stri
 
     html.replace("%AP_SSID%", AP_SSID);
     html.replace("%AP_IP%", obtenerIpServidor());
-    html.replace("%MODO_RED%", "Access Point del ESP32");
-    html.replace("%CLIENTES_AP%", String(WiFi.softAPgetStationNum()));
     html.replace("%UPTIME%", obtenerTiempoActivo());
+    html.replace("%STATUS_CREDENCIALES%",
+                 usaCredencialesPorDefecto()
+                     ? "<div class='state warn'>Acceso inicial disponible.</div>"
+                     : "<div class='state ok'>Acceso listo.</div>");
+    html.replace("%CTA_SECUNDARIO%",
+                 usaCredencialesPorDefecto()
+                     ? "<a class='btn btn-secondary' href='/registro'>Crear acceso inicial</a>"
+                     : "<a class='btn btn-secondary' href='/evidencia'>Ver evidencia SHA-256</a>");
+    html.replace("%ACCESO_NOTA%",
+                 usaCredencialesPorDefecto()
+                     ? "Tambien puedes iniciar sesion si ya conoces las credenciales."
+                     : "La evidencia sigue disponible aparte.");
     html.replace("%LOGIN_ERROR%", construirMensajeHtml("error", error));
     html.replace("%LOGIN_WARNING%", construirMensajeHtml("warn", warning));
     html.replace("%LOGIN_SUCCESS%", construirMensajeHtml("success", success));
@@ -95,19 +128,26 @@ String construirPanelHtml(const String& mensaje, const String& tipoMensaje) {
 
     html.replace("%AP_SSID%", AP_SSID);
     html.replace("%AP_IP%", obtenerIpServidor());
-    html.replace("%CLIENTES_AP%", String(WiFi.softAPgetStationNum()));
     html.replace("%UPTIME%", obtenerTiempoActivo());
     html.replace("%PANEL_MSG%", construirMensajeHtml(tipoMensaje, mensaje));
+    html.replace("%STATUS_CREDENCIALES%",
+                 usaCredencialesPorDefecto()
+                     ? "<div class='state warn'>Sigues con el acceso inicial.</div>"
+                     : "<div class='state ok'>Sesion protegida.</div>");
 
     if (ledEncendido) {
         html.replace("%ICONO_LED%", "💡");
         html.replace("%ESTADO_LED%", "ENCENDIDO");
-        html.replace("%COLOR_LED%", "#4ade80");
+        html.replace("%COLOR_LED%", "#22c55e");
+        html.replace("%LED_DESCRIPCION%", "LED principal activo.");
     } else {
         html.replace("%ICONO_LED%", "⚫");
         html.replace("%ESTADO_LED%", "APAGADO");
-        html.replace("%COLOR_LED%", "#f87171");
+        html.replace("%COLOR_LED%", "#64748b");
+        html.replace("%LED_DESCRIPCION%", "LED principal apagado.");
     }
+
+    html.replace("%LED_SALIDA%", "Control del RGB principal.");
 
     return html;
 }
@@ -116,6 +156,54 @@ String construirPanelHtml(const String& mensaje, const String& tipoMensaje) {
 String construirCambioHtml(const String& mensaje, const String& tipoMensaje) {
     String html = String(CAMBIAR_HTML);
     html.replace("%CAMBIO_MENSAJE%", construirMensajeHtml(tipoMensaje, mensaje));
+    return html;
+}
+
+// ---- Construye la vista de registro inicial ----
+// Esta ruta existe para que el proyecto muestre un flujo completo y demostrable.
+String construirRegistroHtml(const String& mensaje, const String& tipoMensaje) {
+    String html = String(REGISTRO_HTML);
+    html.replace("%STATUS_CREDENCIALES%",
+                 usaCredencialesPorDefecto()
+                     ? "<div class='state warn'>Crea tu acceso.</div>"
+                     : "<div class='state ok'>Ya existe una cuenta.</div>");
+    html.replace("%REGISTRO_MSG%", construirMensajeHtml(tipoMensaje, mensaje));
+    return html;
+}
+
+// ---- Construye la vista de evidencia SHA-256 ----
+// Expone de forma academica lo que se guarda en NVS y como se comparan los hashes.
+String construirEvidenciaHtml(const String& mensaje,
+                              const String& tipoMensaje,
+                              const String& hashUsuarioCalculado,
+                              const String& hashContrasenaCalculada) {
+    String html = String(EVIDENCIA_HTML);
+
+    const bool usuarioCalculado    = !hashUsuarioCalculado.isEmpty();
+    const bool contrasenaCalculada = !hashContrasenaCalculada.isEmpty();
+
+    html.replace("%STATUS_CREDENCIALES%",
+                 usaCredencialesPorDefecto()
+                     ? "<div class='state warn'>Actualmente el sistema conserva los hashes de las credenciales iniciales. Puedes mostrar esto y luego registrar tus propias credenciales.</div>"
+                     : "<div class='state ok'>Actualmente el sistema usa hashes personalizados almacenados en NVS. Esta es la evidencia directa de persistencia segura.</div>");
+    html.replace("%EVIDENCIA_MSG%", construirMensajeHtml(tipoMensaje, mensaje));
+    html.replace("%HASH_USUARIO_GUARDADO%", obtenerHashUsuarioGuardado());
+    html.replace("%HASH_PASS_GUARDADO%", obtenerHashContrasenaGuardada());
+    html.replace("%HASH_USUARIO_CALCULADO%", usuarioCalculado ? hashUsuarioCalculado : "Aun no calculado");
+    html.replace("%HASH_PASS_CALCULADO%", contrasenaCalculada ? hashContrasenaCalculada : "Aun no calculado");
+    html.replace("%MATCH_USUARIO%",
+                 !usuarioCalculado
+                     ? "<div class='pill warn'>Ingresa un usuario para calcular su SHA-256.</div>"
+                     : (hashUsuarioCalculado == obtenerHashUsuarioGuardado()
+                            ? "<div class='pill ok'>El hash del usuario SI coincide con el valor almacenado en NVS.</div>"
+                            : "<div class='pill warn'>El hash del usuario NO coincide con el valor almacenado en NVS.</div>"));
+    html.replace("%MATCH_PASS%",
+                 !contrasenaCalculada
+                     ? "<div class='pill warn'>Ingresa una contrasena para calcular su SHA-256.</div>"
+                     : (hashContrasenaCalculada == obtenerHashContrasenaGuardada()
+                            ? "<div class='pill ok'>El hash de la contrasena SI coincide con el valor almacenado en NVS.</div>"
+                            : "<div class='pill warn'>El hash de la contrasena NO coincide con el valor almacenado en NVS.</div>"));
+
     return html;
 }
 
@@ -184,7 +272,7 @@ void handleRaiz() {
         return;
     }
 
-    responderHtml(200, construirLoginHtml("", obtenerMensajeBloqueo(), ""));
+    redirigir(usaCredencialesPorDefecto() ? "/registro" : "/login");
 }
 
 // ---- GET /login ----
@@ -196,6 +284,28 @@ void handleLoginGet() {
     }
 
     responderHtml(200, construirLoginHtml("", obtenerMensajeBloqueo(), ""));
+}
+
+// ---- GET /registro ----
+// Permite reemplazar las credenciales iniciales por unas propias.
+void handleRegistroGet() {
+    if (sesionValida()) {
+        redirigir("/panel");
+        return;
+    }
+
+    if (!usaCredencialesPorDefecto()) {
+        redirigir("/login");
+        return;
+    }
+
+    responderHtml(200, construirRegistroHtml("", usaCredencialesPorDefecto() ? "warn" : "success"));
+}
+
+// ---- GET /evidencia ----
+// Muestra la demostracion tecnica de SHA-256 y NVS.
+void handleEvidenciaGet() {
+    responderHtml(200, construirEvidenciaHtml("", "success", "", ""));
 }
 
 // ---- POST /login ----
@@ -241,6 +351,77 @@ void handleLoginPost() {
                                      ""));
 }
 
+// ---- POST /registro ----
+// Completa el registro inicial mientras el sistema siga usando admin / 1234.
+void handleRegistroPost() {
+    String nuevoUsuario  = servidor.arg("nuevo_usuario");
+    String nuevaPass     = servidor.arg("nueva_pass");
+    String confirmarPass = servidor.arg("confirmar_pass");
+
+    nuevoUsuario.trim();
+    nuevaPass.trim();
+    confirmarPass.trim();
+
+    if (nuevoUsuario.isEmpty() || nuevaPass.isEmpty() || confirmarPass.isEmpty()) {
+        responderHtml(400, construirRegistroHtml("Debes completar todos los campos del registro inicial.", "error"));
+        return;
+    }
+
+    if (nuevaPass != confirmarPass) {
+        responderHtml(400, construirRegistroHtml("La confirmacion de la contrasena no coincide.", "error"));
+        return;
+    }
+
+    if (!usaCredencialesPorDefecto()) {
+        responderHtml(403,
+                      construirRegistroHtml("El registro inicial ya fue completado. Inicia sesion y usa la opcion Cambiar credenciales para cualquier ajuste posterior.",
+                                            "warn"));
+        return;
+    }
+
+    if (!registrarCredencialesIniciales(nuevoUsuario, nuevaPass)) {
+        responderHtml(400,
+                      construirRegistroHtml("No se detectaron cambios reales. Usa valores distintos a las credenciales iniciales para que la demostracion tenga sentido.",
+                                            "warn"));
+        return;
+    }
+
+    responderHtml(200,
+                  construirLoginHtml("",
+                                     "",
+                                     "Registro completado. Las nuevas credenciales quedaron almacenadas como hashes SHA-256 en NVS. Ahora ya puedes iniciar sesion y abrir la vista de evidencia."));
+}
+
+// ---- POST /evidencia ----
+// Calcula hashes en tiempo real para compararlos contra lo almacenado.
+void handleEvidenciaPost() {
+    String usuarioDemo    = servidor.arg("usuario_demo");
+    String contrasenaDemo = servidor.arg("contrasena_demo");
+
+    usuarioDemo.trim();
+    contrasenaDemo.trim();
+
+    const String hashUsuarioCalculado =
+        usuarioDemo.isEmpty() ? "" : hashTexto(usuarioDemo);
+    const String hashContrasenaCalculada =
+        contrasenaDemo.isEmpty() ? "" : hashTexto(contrasenaDemo);
+
+    if (hashUsuarioCalculado.isEmpty() && hashContrasenaCalculada.isEmpty()) {
+        responderHtml(400,
+                      construirEvidenciaHtml("Ingresa al menos un valor para que el ESP32 calcule su SHA-256 y puedas compararlo con lo almacenado.",
+                                             "warn",
+                                             "",
+                                             ""));
+        return;
+    }
+
+    responderHtml(200,
+                  construirEvidenciaHtml("Hashes calculados en el propio ESP32. Usa las etiquetas de coincidencia para demostrar la comparacion contra NVS.",
+                                         "success",
+                                         hashUsuarioCalculado,
+                                         hashContrasenaCalculada));
+}
+
 // ---- GET /panel ----
 // Muestra el panel seguro si el usuario ya fue autenticado.
 void handlePanel() {
@@ -261,17 +442,17 @@ void handleLed() {
     const String estado = servidor.arg("estado");
     if (estado == "on") {
         ledEncendido = true;
-        digitalWrite(PIN_LED, HIGH);
-        Serial.println("[LED] El LED fue encendido desde el panel.");
-        responderHtml(200, construirPanelHtml("El LED fue encendido correctamente.", "success"));
+        aplicarEstadoLedUsuario();
+        Serial.println("[LED] El LED principal fue encendido desde el panel.");
+        responderHtml(200, construirPanelHtml("El LED principal de la placa fue encendido.", "success"));
         return;
     }
 
     if (estado == "off") {
         ledEncendido = false;
-        digitalWrite(PIN_LED, LOW);
-        Serial.println("[LED] El LED fue apagado desde el panel.");
-        responderHtml(200, construirPanelHtml("El LED fue apagado correctamente.", "success"));
+        aplicarEstadoLedUsuario();
+        Serial.println("[LED] El LED principal fue apagado desde el panel.");
+        responderHtml(200, construirPanelHtml("El LED principal de la placa fue apagado.", "success"));
         return;
     }
 
@@ -359,10 +540,16 @@ void handleNoEncontrado() {
 // Aquí se crea la red local y se asigna la IP fija del servidor.
 void setupWiFi() {
     Serial.println("[WiFi] Iniciando Access Point del ESP32...");
+    mostrarEstadoPlaca(0, 0, 32);
 
+    WiFi.persistent(false);
+    WiFi.disconnect(true, true);
+    WiFi.mode(WIFI_MODE_NULL);
+    delay(250);
     WiFi.mode(WIFI_AP);
-    WiFi.softAPdisconnect(true);
-    delay(200);
+    WiFi.setSleep(false);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    delay(250);
 
     if (!WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_MASK)) {
         Serial.println("[WiFi] No se pudo aplicar la IP fija. Se usará la configuración por defecto.");
@@ -370,11 +557,29 @@ void setupWiFi() {
         Serial.println("[WiFi] IP fija aplicada correctamente.");
     }
 
-    if (!WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CANAL, 0, AP_MAX_CLIENTES)) {
-        Serial.println("[WiFi] Error: no se pudo iniciar el Access Point.");
+    bool apIniciado = WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CANAL, 0, AP_MAX_CLIENTES);
+
+    if (!apIniciado) {
+        mostrarEstadoPlaca(32, 16, 0);
+        Serial.println("[WiFi] El AP con canal fijo no inicio. Reintentando con configuracion basica...");
+        delay(250);
+        apIniciado = WiFi.softAP(AP_SSID, AP_PASSWORD);
+    }
+
+    if (!apIniciado) {
+        mostrarEstadoPlaca(32, 32, 0);
+        Serial.println("[WiFi] El AP seguro no inicio. Activando AP de diagnostico...");
+        delay(250);
+        apIniciado = WiFi.softAP("ESP32_Control_LED_DIAG");
+    }
+
+    if (!apIniciado) {
+        mostrarEstadoPlaca(32, 0, 0);
+        Serial.println("[WiFi] Error critico: no se pudo iniciar ningun Access Point.");
         return;
     }
 
+    mostrarEstadoPlaca(0, 32, 0);
     Serial.println("[WiFi] Access Point activo y listo para recibir clientes.");
     Serial.println("[WiFi] SSID: " + String(AP_SSID));
     Serial.println("[WiFi] Clave del Access Point configurada correctamente.");
@@ -391,6 +596,10 @@ void setupServer() {
     servidor.on("/", HTTP_GET, handleRaiz);
     servidor.on("/login", HTTP_GET, handleLoginGet);
     servidor.on("/login", HTTP_POST, handleLoginPost);
+    servidor.on("/registro", HTTP_GET, handleRegistroGet);
+    servidor.on("/registro", HTTP_POST, handleRegistroPost);
+    servidor.on("/evidencia", HTTP_GET, handleEvidenciaGet);
+    servidor.on("/evidencia", HTTP_POST, handleEvidenciaPost);
     servidor.on("/panel", HTTP_GET, handlePanel);
     servidor.on("/led", HTTP_POST, handleLed);
     servidor.on("/logout", HTTP_POST, handleLogout);
@@ -410,17 +619,22 @@ void setupServer() {
 // Configura el hardware, carga credenciales, crea la red y arranca el servidor.
 void setup() {
     Serial.begin(115200);
-    delay(400);
+    delay(1200);
+    mostrarEstadoPlaca(0, 0, 8);
     Serial.println("\n=== Demostración: autenticación web segura en ESP32 ===");
 
-    pinMode(PIN_LED, OUTPUT);
-    digitalWrite(PIN_LED, LOW);
+    pinMode(PIN_LED_AUXILIAR, OUTPUT);
     ledEncendido = false;
-    Serial.println("[HW] LED inicializado en estado APAGADO.");
+    aplicarEstadoLedUsuario();
+    Serial.println("[HW] LED principal y salida auxiliar inicializados en estado APAGADO.");
 
+    mostrarEstadoPlaca(16, 0, 16);
     loadCredentials();
     setupWiFi();
     setupServer();
+    mostrarEstadoPlaca(0, 32, 8);
+    delay(250);
+    aplicarEstadoLedUsuario();
 
     Serial.println("[SISTEMA] El sistema está listo. Conéctate al WiFi del ESP32 y abre la IP mostrada.\n");
 }

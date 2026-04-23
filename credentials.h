@@ -21,6 +21,8 @@ struct Credenciales {
 Credenciales credenciales;
 Preferences  prefs;
 
+bool actualizarCredenciales(const String& nuevoUsuario, const String& nuevaContrasena);
+
 // ---- Verifica si una cadena tiene formato SHA-256 hexadecimal ----
 // Un hash SHA-256 en texto tiene 64 caracteres hexadecimales.
 bool hashTieneFormatoValido(const String& valor) {
@@ -57,6 +59,37 @@ String hashTexto(const String& texto) {
     }
 
     return hashHex;
+}
+
+// ---- Expone los hashes cargados en RAM ----
+// Sirve para la vista de evidencia tecnica del proyecto.
+String obtenerHashUsuarioGuardado() {
+    return credenciales.hashUsuario;
+}
+
+String obtenerHashContrasenaGuardada() {
+    return credenciales.hashContrasena;
+}
+
+// ---- Indica si el sistema sigue usando las credenciales iniciales ----
+// Esto permite ofrecer un registro inicial sin debilitar el cambio normal de credenciales.
+bool usaCredencialesPorDefecto() {
+    return credenciales.hashUsuario == hashTexto(DEFAULT_USUARIO) &&
+           credenciales.hashContrasena == hashTexto(DEFAULT_PASS);
+}
+
+// ---- Registro inicial del usuario final ----
+// Solo debe usarse mientras las credenciales del sistema sigan en su valor por defecto.
+bool registrarCredencialesIniciales(const String& usuario, const String& contrasena) {
+    if (usuario.isEmpty() || contrasena.isEmpty()) {
+        return false;
+    }
+
+    if (!usaCredencialesPorDefecto()) {
+        return false;
+    }
+
+    return actualizarCredenciales(usuario, contrasena);
 }
 
 // ---- Guarda solo los hashes actuales en NVS ----

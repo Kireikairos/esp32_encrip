@@ -20,7 +20,10 @@
 
 // ---- Hardware ----
 // GPIO donde está conectado el LED de prueba.
-#define PIN_LED 2
+#define PIN_LED_AUXILIAR 2
+
+// LED principal RGB integrado en la placa ESP32-S3 (WS2812 en GPIO48).
+#define PIN_LED_PRINCIPAL 48
 
 // ---- Seguridad ----
 // Se permiten 3 intentos fallidos y luego se bloquea el acceso por 1 minuto.
